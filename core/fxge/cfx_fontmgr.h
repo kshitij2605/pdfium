@@ -13,6 +13,7 @@
 #include <array>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <tuple>
 
 #include "core/fxcrt/bytestring.h"
@@ -81,6 +82,7 @@ class CFX_FontMgr {
   // Must come before |builtin_mapper_| and |face_map_|.
   ScopedFXFTLibraryRec const ft_library_;
   std::unique_ptr<CFX_FontMapper> builtin_mapper_;
+  mutable std::mutex mutex_;
   std::map<std::tuple<ByteString, int, bool>, ObservedPtr<FontDesc>> face_map_;
   std::map<std::tuple<size_t, uint32_t>, ObservedPtr<FontDesc>> ttc_face_map_;
   const bool ft_library_supports_hinting_;

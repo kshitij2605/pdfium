@@ -65,6 +65,7 @@ void CPDF_FontGlobals::LoadEmbeddedMaps() {
 RetainPtr<CPDF_Font> CPDF_FontGlobals::Find(
     CPDF_Document* doc,
     CFX_FontMapper::StandardFont index) {
+  std::lock_guard<std::mutex> lock(mutex_);
   auto it = stock_map_.find(doc);
   if (it == stock_map_.end() || !it->second) {
     return nullptr;
@@ -76,6 +77,7 @@ RetainPtr<CPDF_Font> CPDF_FontGlobals::Find(
 void CPDF_FontGlobals::Set(CPDF_Document* doc,
                            CFX_FontMapper::StandardFont index,
                            RetainPtr<CPDF_Font> font) {
+  std::lock_guard<std::mutex> lock(mutex_);
   UnownedPtr<CPDF_Document> pKey(doc);
   if (!pdfium::Contains(stock_map_, pKey)) {
     stock_map_[pKey] = std::make_unique<CFX_StockFontArray>();
@@ -84,6 +86,7 @@ void CPDF_FontGlobals::Set(CPDF_Document* doc,
 }
 
 void CPDF_FontGlobals::Clear(CPDF_Document* doc) {
+  std::lock_guard<std::mutex> lock(mutex_);
   // Avoid constructing smart-pointer key as erase() doesn't invoke
   // transparent lookup in the same way find() does.
   auto it = stock_map_.find(doc);
@@ -114,6 +117,7 @@ void CPDF_FontGlobals::LoadEmbeddedKorea1CMaps() {
 
 RetainPtr<const CPDF_CMap> CPDF_FontGlobals::GetPredefinedCMap(
     const ByteString& name) {
+  std::lock_guard<std::mutex> lock(mutex_);
   auto it = cmaps_.find(name);
   if (it != cmaps_.end()) {
     return it->second;
@@ -128,6 +132,7 @@ RetainPtr<const CPDF_CMap> CPDF_FontGlobals::GetPredefinedCMap(
 }
 
 CPDF_CID2UnicodeMap* CPDF_FontGlobals::GetCID2UnicodeMap(CIDSet charset) {
+  std::lock_guard<std::mutex> lock(mutex_);
   if (!cid2unicode_maps_[charset]) {
     cid2unicode_maps_[charset] = std::make_unique<CPDF_CID2UnicodeMap>(charset);
   }

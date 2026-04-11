@@ -8,6 +8,7 @@
 #define CORE_FXGE_CFX_FONTCACHE_H_
 
 #include <map>
+#include <mutex>
 
 #include "core/fxcrt/fx_system.h"
 #include "core/fxcrt/retain_ptr.h"
@@ -26,6 +27,7 @@ class CFX_FontCache {
 #endif
 
  private:
+  mutable std::mutex mutex_;
   std::map<CFX_Face*, ObservedPtr<CFX_GlyphCache>> glyph_cache_map_;
   std::map<CFX_Face*, ObservedPtr<CFX_GlyphCache>> ext_glyph_cache_map_;
 };

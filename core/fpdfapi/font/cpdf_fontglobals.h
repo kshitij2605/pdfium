@@ -11,6 +11,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 
 #include "core/fpdfapi/cmaps/fpdf_cmaps.h"
 #include "core/fpdfapi/font/cpdf_cidfont.h"
@@ -64,6 +65,7 @@ class CPDF_FontGlobals {
   void LoadEmbeddedJapan1CMaps();
   void LoadEmbeddedKorea1CMaps();
 
+  mutable std::mutex mutex_;
   std::map<ByteString, RetainPtr<const CPDF_CMap>> cmaps_;
   std::array<std::unique_ptr<CPDF_CID2UnicodeMap>, CIDSET_NUM_SETS>
       cid2unicode_maps_;

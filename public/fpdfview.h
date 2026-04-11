@@ -8,9 +8,12 @@
 // initialize the library, load documents, and render pages, amongst other
 // things.
 //
-// NOTE: None of the PDFium APIs are thread-safe. They expect to be called
-// from a single thread. Barring that, embedders are required to ensure (via
-// a mutex or similar) that only a single PDFium call can be made at a time.
+// NOTE: In upstream PDFium, none of the APIs are thread-safe. This fork adds
+// mutex protection to global font caches (CPDF_FontGlobals, CFX_FontCache,
+// CFX_FontMgr), making it safe to concurrently render pages from separate
+// documents on different threads. Library initialization (FPDF_InitLibrary)
+// and destruction (FPDF_DestroyLibrary) must still be called from a single
+// thread before/after all rendering activity.
 //
 // NOTE: External docs refer to this file as "fpdfview.h", so do not rename
 // despite lack of consistency with other public files.

@@ -15,6 +15,7 @@ CFX_FontCache::CFX_FontCache() = default;
 CFX_FontCache::~CFX_FontCache() = default;
 
 RetainPtr<CFX_GlyphCache> CFX_FontCache::GetGlyphCache(const CFX_Font* font) {
+  std::lock_guard<std::mutex> lock(mutex_);
   RetainPtr<CFX_Face> face = font->GetFace();
   const bool bExternal = !face;
   auto& map = bExternal ? ext_glyph_cache_map_ : glyph_cache_map_;

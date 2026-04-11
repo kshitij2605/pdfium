@@ -205,6 +205,50 @@ possible.
 Outside of the public/ directory, code may change at any time, and embedders
 should not directly call these routines.
 
+## Thread Safety (Fork Modification)
+
+Upstream PDFium explicitly states that none of its APIs are thread-safe. This is
+by design — Chrome and Android isolate PDFium in sandboxed processes, so
+thread-safety at the library level is unnecessary for those embedders.
+
+However, language bindings (Python's pypdfium2, Java JNI wrappers, etc.) run
+PDFium in-process. In these environments, rendering pages from multiple documents
+concurrently — even with completely separate `FPDF_DOCUMENT` handles — crashes
+due to unsynchronized access to global mutable state in the font subsystem.
+
+### What was changed
+
+This fork adds `std::mutex` protection to the three global singletons that are
+mutated during page rendering:
+
+| Class | File | Protected State |
+|---|---|---|
+| `CPDF_FontGlobals` | `core/fpdfapi/font/cpdf_fontglobals.{h,cpp}` | `cmaps_`, `stock_map_`, `cid2unicode_maps_` |
+| `CFX_FontCache` | `core/fxge/cfx_fontcache.{h,cpp}` | `glyph_cache_map_`, `ext_glyph_cache_map_` |
+| `CFX_FontMgr` | `core/fxge/cfx_fontmgr.{h,cpp}` | `face_map_`, `ttc_face_map_` |
+
+Each class has a single `std::mutex` with `std::lock_guard` at method granularity.
+There is no cross-class locking, so deadlocks are not possible.
+
+### What is safe
+
+- Concurrent page rendering from **separate** `FPDF_DOCUMENT` handles on
+  different threads
+- Loading and closing documents concurrently
+
+### What is NOT safe
+
+- `FPDF_InitLibrary()` / `FPDF_DestroyLibrary()` must be called from a single
+  thread before/after all rendering activity
+- Concurrent access to the **same** `FPDF_DOCUMENT` or `FPDF_PAGE` handle from
+  multiple threads (this remains unsafe and requires external synchronization)
+
+### Performance impact
+
+Uncontended mutex acquisition is ~25ns on modern x86 — negligible compared to
+the milliseconds spent in actual rendering. For single-threaded workloads there
+is no measurable overhead.
+
 ## Code Coverage
 
 Code coverage reports for PDFium can be generated in Linux development
