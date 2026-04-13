@@ -9,6 +9,7 @@
 
 #include <map>
 #include <memory>
+#include <mutex>
 #include <tuple>
 
 #include "core/fxcrt/bytestring.h"
@@ -84,6 +85,7 @@ class CFX_GlyphCache final : public Retainable, public Observable {
                                      int dest_width,
                                      int anti_alias);
   RetainPtr<CFX_Face> const face_;
+  mutable std::mutex mutex_;
   std::map<ByteString, SizeGlyphCache> size_map_;
   std::map<PathMapKey, std::unique_ptr<CFX_Path>> path_map_;
   std::map<WidthMapKey, int> width_map_;

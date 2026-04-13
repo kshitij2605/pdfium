@@ -17,7 +17,7 @@
 namespace {
 
 #if !BUILDFLAG(IS_WIN)
-uint32_t g_last_error = 0;
+thread_local uint32_t g_last_error = 0;
 #endif
 
 template <typename IntType, typename CharType>

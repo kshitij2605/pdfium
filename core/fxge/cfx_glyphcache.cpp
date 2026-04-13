@@ -8,6 +8,7 @@
 
 #include <initializer_list>
 #include <memory>
+#include <mutex>
 #include <utility>
 
 #include "build/build_config.h"
@@ -132,6 +133,7 @@ std::unique_ptr<CFX_GlyphBitmap> CFX_GlyphCache::RenderGlyph(
 const CFX_Path* CFX_GlyphCache::LoadGlyphPath(const CFX_Font* font,
                                               uint32_t glyph_index,
                                               int dest_width) {
+  std::lock_guard<std::mutex> lock(mutex_);
   if (!GetFace() || glyph_index == kInvalidGlyphIndex) {
     return nullptr;
   }
@@ -159,6 +161,7 @@ const CFX_GlyphBitmap* CFX_GlyphCache::LoadGlyphBitmap(
     int dest_width,
     int anti_alias,
     CFX_TextRenderOptions* text_options) {
+  std::lock_guard<std::mutex> lock(mutex_);
   if (glyph_index == kInvalidGlyphIndex) {
     return nullptr;
   }
@@ -227,6 +230,7 @@ int CFX_GlyphCache::GetGlyphWidth(const CFX_Font* font,
                                   uint32_t glyph_index,
                                   int dest_width,
                                   int weight) {
+  std::lock_guard<std::mutex> lock(mutex_);
   const WidthMapKey key = std::make_tuple(glyph_index, dest_width, weight);
   auto it = width_map_.find(key);
   if (it != width_map_.end()) {
@@ -281,6 +285,7 @@ void CFX_GlyphCache::DestroyGlobals() {
 }
 
 CFX_TypeFace* CFX_GlyphCache::GetDeviceCache(const CFX_Font* font) {
+  std::lock_guard<std::mutex> lock(mutex_);
   if (!typeface_ && g_fontmgr) {
     pdfium::span<const uint8_t> span = font->GetFontSpan();
     typeface_ = g_fontmgr->makeFromStream(

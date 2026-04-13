@@ -1,5 +1,70 @@
 # PDFium
 
+## Thread Safety (Fork Modification)
+
+Upstream PDFium explicitly states that none of its APIs are thread-safe. This is
+by design — Chrome and Android isolate PDFium in sandboxed processes, so
+thread-safety at the library level is unnecessary for those embedders.
+
+However, language bindings (Python's pypdfium2, Java JNI wrappers, etc.) run
+PDFium in-process. In these environments, rendering pages from multiple documents
+concurrently — even with completely separate `FPDF_DOCUMENT` handles — crashes
+due to unsynchronized access to global mutable state in the font subsystem.
+
+### What was changed
+
+This fork adds `std::mutex` protection to four classes with shared mutable state
+that is accessed during page rendering:
+
+| Class | File | Protected State |
+|---|---|---|
+| `CPDF_FontGlobals` | `core/fpdfapi/font/cpdf_fontglobals.{h,cpp}` | `cmaps_`, `stock_map_`, `cid2unicode_maps_` |
+| `CFX_FontCache` | `core/fxge/cfx_fontcache.{h,cpp}` | `glyph_cache_map_`, `ext_glyph_cache_map_` |
+| `CFX_FontMgr` | `core/fxge/cfx_fontmgr.{h,cpp}` | `face_map_`, `ttc_face_map_` |
+| `CFX_GlyphCache` | `core/fxge/cfx_glyphcache.{h,cpp}` | `size_map_`, `path_map_`, `width_map_`, `typeface_` |
+
+`CFX_GlyphCache` is the critical fix — its instances are shared across threads
+(returned from `CFX_FontCache`), and its methods call FreeType's `FT_Load_Glyph`
+which modifies the per-face glyph slot. The per-instance mutex serializes all
+glyph operations on a given font face, which is exactly what FreeType requires.
+
+Additionally, `g_last_error` in `core/fxcrt/fx_system.cpp` was changed from a
+plain global to `thread_local` to prevent error code races across threads.
+
+Each class has a single `std::mutex` with `std::lock_guard` at method granularity.
+There is no cross-class locking, so deadlocks are not possible.
+
+### What is safe
+
+- Concurrent `FPDF_RenderPageBitmap` calls from multiple threads (the expensive
+  part — glyph rendering, path rasterization)
+- Different `FPDF_DOCUMENT` handles on different threads
+
+### What requires external serialization
+
+- `FPDF_InitLibrary()` / `FPDF_DestroyLibrary()` — call from a single thread
+  before/after all rendering activity
+- `FPDF_LoadPage` / `FPDF_ClosePage` / `FPDF_LoadDocument` / `FPDF_CloseDocument`
+  — these touch global parser state and must be serialized
+- Concurrent access to the **same** `FPDF_DOCUMENT` or `FPDF_PAGE` handle from
+  multiple threads
+
+### Recommended usage pattern
+
+```
+1. Lock → Open document + load all pages → Unlock
+2. Render pages concurrently (thread-safe — this is the expensive part)
+3. Lock → Close pages + close document → Unlock
+```
+
+### Performance impact
+
+Uncontended mutex acquisition is ~25ns on modern x86 — negligible compared to
+the milliseconds spent in actual rendering. For single-threaded workloads there
+is no measurable overhead.
+
+---
+
 ## Prerequisites
 
 PDFium uses the same build tooling as Chromium. See the platform-specific
@@ -204,50 +269,6 @@ possible.
 
 Outside of the public/ directory, code may change at any time, and embedders
 should not directly call these routines.
-
-## Thread Safety (Fork Modification)
-
-Upstream PDFium explicitly states that none of its APIs are thread-safe. This is
-by design — Chrome and Android isolate PDFium in sandboxed processes, so
-thread-safety at the library level is unnecessary for those embedders.
-
-However, language bindings (Python's pypdfium2, Java JNI wrappers, etc.) run
-PDFium in-process. In these environments, rendering pages from multiple documents
-concurrently — even with completely separate `FPDF_DOCUMENT` handles — crashes
-due to unsynchronized access to global mutable state in the font subsystem.
-
-### What was changed
-
-This fork adds `std::mutex` protection to the three global singletons that are
-mutated during page rendering:
-
-| Class | File | Protected State |
-|---|---|---|
-| `CPDF_FontGlobals` | `core/fpdfapi/font/cpdf_fontglobals.{h,cpp}` | `cmaps_`, `stock_map_`, `cid2unicode_maps_` |
-| `CFX_FontCache` | `core/fxge/cfx_fontcache.{h,cpp}` | `glyph_cache_map_`, `ext_glyph_cache_map_` |
-| `CFX_FontMgr` | `core/fxge/cfx_fontmgr.{h,cpp}` | `face_map_`, `ttc_face_map_` |
-
-Each class has a single `std::mutex` with `std::lock_guard` at method granularity.
-There is no cross-class locking, so deadlocks are not possible.
-
-### What is safe
-
-- Concurrent page rendering from **separate** `FPDF_DOCUMENT` handles on
-  different threads
-- Loading and closing documents concurrently
-
-### What is NOT safe
-
-- `FPDF_InitLibrary()` / `FPDF_DestroyLibrary()` must be called from a single
-  thread before/after all rendering activity
-- Concurrent access to the **same** `FPDF_DOCUMENT` or `FPDF_PAGE` handle from
-  multiple threads (this remains unsafe and requires external synchronization)
-
-### Performance impact
-
-Uncontended mutex acquisition is ~25ns on modern x86 — negligible compared to
-the milliseconds spent in actual rendering. For single-threaded workloads there
-is no measurable overhead.
 
 ## Code Coverage
 
