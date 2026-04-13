@@ -1,151 +1,130 @@
-# PDFium Fork Changes — Thread-Safety for Concurrent Rendering
+# PDFium Fork Changes — Thread-Safety for Cross-Document Concurrency
 
 ## Why This Fork Exists
 
-Google's PDFium C library is **not thread-safe** for concurrent page rendering. When multiple threads render PDF pages simultaneously, the library crashes with segfaults due to unprotected shared mutable state in glyph caching and FreeType face access.
+Google's PDFium C library is **not thread-safe**. When multiple threads process separate PDF documents concurrently — even with completely separate `FPDF_DOCUMENT` handles — the library crashes with segfaults, double-frees, and heap corruption.
 
-This fork adds minimal mutex protection to enable safe concurrent rendering from multiple threads within a single process. The changes follow the same `std::mutex` + `std::lock_guard` pattern already used by three other classes in the codebase (CPDF_FontGlobals, CFX_FontCache, CFX_FontMgr).
+This is by design: Chrome and Android isolate PDFium in sandboxed processes. But language bindings (Python's pypdfium2, Go's go-pdfium, Rust's pdfium-render, .NET's PdfiumViewer, C's libvips) run PDFium in-process. Every one of these projects works around the limitation with global locks, multiprocessing, or WASM isolation.
 
-## Changes
+This fork adds ~200 lines of C++ to make PDFium **fully thread-safe for cross-document concurrency** — different `FPDF_DOCUMENT` instances can be used from different threads simultaneously with no external locks.
 
-### 1. CFX_GlyphCache — Mutex-protect glyph/path/width caches
+## Root Causes
 
-**Files:** `core/fxge/cfx_glyphcache.h`, `core/fxge/cfx_glyphcache.cpp`
+Through systematic isolation testing and C++ source auditing, we identified multiple layers of unprotected shared mutable state:
 
-**Problem:** `CFX_GlyphCache` instances are shared across threads (returned from the already-mutex-protected `CFX_FontCache`), but the cache's own mutable maps had no synchronization:
+1. **FreeType face operations** — `CFX_Face` wraps `FT_Face` but had no per-face synchronization. Shared font faces are accessed by multiple threads during rendering.
+2. **Glyph caches** — `CFX_GlyphCache` instances are shared across threads but their mutable maps (bitmap, path, width) had no synchronization.
+3. **Global font singletons** — `CPDF_FontGlobals`, `CFX_FontCache`, `CFX_FontMgr` have shared maps accessed during font lookup.
+4. **Font mapper** — `CFX_FontMapper::FindSubstFont()` has shared mutable state and a recursive fallback path.
+5. **Non-atomic reference counting** — `Retainable::ref_count_` was a plain `uintptr_t`. When multiple threads hold `RetainPtr<CFX_Face>` to the same cached face, concurrent `Retain()`/`Release()` corrupted the counter causing double-frees.
+6. **Unprotected Observable** — `CFX_FontMgr::face_map_` uses `ObservedPtr<FontDesc>` which calls `AddObserver`/`RemoveObserver`. Concurrent operations corrupted the unprotected `std::set`.
+7. **Shared static parser state** — `CPDF_SyntaxParser::s_CurrentRecursionDepth` is a `static int` shared across all threads, causing incorrect depth tracking.
+8. **Global error state** — `g_last_error` was a plain global variable clobbered by concurrent threads.
 
-```cpp
-std::map<ByteString, SizeGlyphCache> size_map_;
-std::map<PathMapKey, std::unique_ptr<CFX_Path>> path_map_;
-std::map<WidthMapKey, int> width_map_;
-```
+## Changes (4 commits)
 
-When two threads render pages using the same font, they share a `CFX_GlyphCache` instance and race on these maps. The cache's methods also call `FT_Load_Glyph` / `FT_Render_Glyph` which modify FreeType's per-face glyph slot — also not thread-safe.
+### Commit 1: `48d9b94fa` — Global font singleton mutexes
 
-**Fix:** Added `mutable std::mutex mutex_` to the class and `std::lock_guard<std::mutex> lock(mutex_)` at the entry of each public method:
+Added `std::mutex` to three global font singletons:
 
-- `LoadGlyphBitmap()` — bitmap cache + FreeType rendering
-- `LoadGlyphPath()` — path cache + FreeType glyph loading
-- `GetGlyphWidth()` — width cache + FreeType glyph loading
-- `GetDeviceCache()` — Skia typeface creation (PDF_USE_SKIA only)
-
-The per-instance mutex serializes all glyph operations on a given font face, which is exactly what FreeType requires (per-face serialization). Different fonts/faces use different `CFX_GlyphCache` instances and don't contend.
-
-### 2. g_last_error — Make thread-local
-
-**File:** `core/fxcrt/fx_system.cpp`
-
-**Problem:** `g_last_error` is a plain global variable used by `FXSYS_SetLastError` / `FXSYS_GetLastError` on non-Windows platforms. Concurrent threads clobber each other's error codes.
-
-**Fix:** Changed from `uint32_t g_last_error = 0` to `thread_local uint32_t g_last_error = 0`.
-
-### 3. Previously applied changes (not in this commit)
-
-These were applied in earlier commits to the fork:
-
-| Class | File | What was protected |
+| Class | File | Protected State |
 |---|---|---|
-| `CPDF_FontGlobals` | `core/fpdfapi/font/cpdf_fontglobals.cpp` | `stock_map_`, `cmaps_`, `cid2unicode_maps_` |
-| `CFX_FontCache` | `core/fxge/cfx_fontcache.h/.cpp` | `glyph_cache_map_`, `ext_glyph_cache_map_` |
-| `CFX_FontMgr` | `core/fxge/cfx_fontmgr.h/.cpp` | `face_map_`, `ttc_face_map_` |
+| `CPDF_FontGlobals` | `core/fpdfapi/font/cpdf_fontglobals.{h,cpp}` | `cmaps_`, `stock_map_`, `cid2unicode_maps_` |
+| `CFX_FontCache` | `core/fxge/cfx_fontcache.{h,cpp}` | `glyph_cache_map_`, `ext_glyph_cache_map_` |
+| `CFX_FontMgr` | `core/fxge/cfx_fontmgr.{h,cpp}` | `face_map_`, `ttc_face_map_` |
 
-## Complete Diff
+### Commit 2: `d7a8d2a18` — GlyphCache mutex + thread-local error state
 
-```diff
-diff --git a/core/fxcrt/fx_system.cpp b/core/fxcrt/fx_system.cpp
---- a/core/fxcrt/fx_system.cpp
-+++ b/core/fxcrt/fx_system.cpp
-@@ -17,7 +17,7 @@
- namespace {
+| Change | File |
+|---|---|
+| `mutable std::mutex mutex_` on `CFX_GlyphCache` | `core/fxge/cfx_glyphcache.{h,cpp}` |
+| `thread_local` on `g_last_error` | `core/fxcrt/fx_system.cpp` |
 
- #if !BUILDFLAG(IS_WIN)
--uint32_t g_last_error = 0;
-+thread_local uint32_t g_last_error = 0;
- #endif
+### Commit 3: `81f9875b1` — Comprehensive per-face thread safety
 
-diff --git a/core/fxge/cfx_glyphcache.h b/core/fxge/cfx_glyphcache.h
---- a/core/fxge/cfx_glyphcache.h
-+++ b/core/fxge/cfx_glyphcache.h
-@@ -9,6 +9,7 @@
+| Change | File(s) |
+|---|---|
+| Per-face `recursive_mutex` on `CFX_Face` — locks every FreeType-calling method | `core/fxge/cfx_face.{h,cpp}` |
+| FT_Library face lifecycle mutex (protects `FT_New_Memory_Face` / `FT_Done_Face`) | `core/fxge/freetype/fx_freetype.{h,cpp}` |
+| `recursive_mutex` on `CFX_FontMapper::FindSubstFont()` | `core/fxge/cfx_fontmapper.{h,cpp}` |
+| Face lock usage in `CFX_Font::GetGlyphBBox` / `GetPsName` | `core/fxge/cfx_font.cpp` |
+| Face lock usage in `CPDF_SimpleFont::LoadCharMetrics` | `core/fpdfapi/font/cpdf_simplefont.cpp` |
+| `thread_local` on `g_CurrentRecursionDepth` | `core/fpdfapi/render/cpdf_renderstatus.cpp` |
 
- #include <map>
- #include <memory>
-+#include <mutex>
- #include <tuple>
+### Commit 4: `6781cbb56` — Full cross-document thread safety
 
-@@ -84,6 +85,7 @@
-                                      int anti_alias);
-   RetainPtr<CFX_Face> const face_;
-+  mutable std::mutex mutex_;
-   std::map<ByteString, SizeGlyphCache> size_map_;
+| Change | File(s) |
+|---|---|
+| Atomic `ref_count_`: `std::atomic<uintptr_t>`, `fetch_add(relaxed)` / `fetch_sub(acq_rel)` | `core/fxcrt/retain_ptr.h` |
+| Thread-safe `Observable`: mutex on `observers_` set, swap-before-iterate in `NotifyObservers()` | `core/fxcrt/observed_ptr.{h,cpp}` |
+| `thread_local` on `s_CurrentRecursionDepth` | `core/fpdfapi/parser/cpdf_syntax_parser.{h,cpp}` |
 
-diff --git a/core/fxge/cfx_glyphcache.cpp b/core/fxge/cfx_glyphcache.cpp
---- a/core/fxge/cfx_glyphcache.cpp
-+++ b/core/fxge/cfx_glyphcache.cpp
-@@ -8,6 +8,7 @@
- #include <initializer_list>
- #include <memory>
-+#include <mutex>
- #include <utility>
+## Thread-Safety Model
 
- // Added std::lock_guard<std::mutex> lock(mutex_) to:
- // - LoadGlyphPath()     (protects path_map_)
- // - LoadGlyphBitmap()   (protects size_map_ via LookUpGlyphBitmap)
- // - GetGlyphWidth()     (protects width_map_)
- // - GetDeviceCache()    (protects typeface_, Skia only)
-```
+### Fully safe (no external locks needed)
 
-## Thread-Safety Constraints
+| Operation | Mechanism |
+|---|---|
+| `FPDF_LoadDocument` | Independent CPDF_Document; thread-local parser depth |
+| `FPDF_LoadPage` | Per-face mutex + atomic refcount + thread-safe Observable |
+| `FPDF_RenderPageBitmap` | Per-face mutex + GlyphCache mutex + FontMapper mutex |
+| `FPDF_ClosePage` | Face lifecycle mutex + atomic refcount + thread-safe Observable |
+| `FPDF_CloseDocument` | Face lifecycle mutex + atomic refcount + thread-safe Observable |
 
-After these patches, the following operations are safe for concurrent use:
+### NOT safe (architectural limitation)
 
-| Operation | Thread-safe? | Notes |
-|---|---|---|
-| `FPDF_RenderPageBitmap` | Yes | CFX_GlyphCache mutex serializes per-face |
-| `FPDF_LoadDocument` | Partially | Fails at 8+ concurrent opens; best to serialize |
-| `FPDF_LoadPage` | No | Must be serialized (global parser state) |
-| `FPDF_ClosePage` / `FPDF_CloseDocument` | No | Must be serialized |
+- `FPDF_InitLibrary()` / `FPDF_DestroyLibrary()` — call once from a single thread
+- Concurrent access to the **same** `FPDF_DOCUMENT` from multiple threads — `CPDF_Document` internal state (page tree, object cache, cross-reference table) has unprotected shared mutable state that would require a massive refactor
 
-**Recommended usage pattern:**
+## Stress Test Results
 
-```
-1. Serialize: Open document + load all pages
-2. Concurrent: Render pages (the expensive part — now thread-safe)
-3. Serialize: Close pages + close document
-```
+All tests use separate `FPDF_DOCUMENT` instances per thread (cross-document concurrency).
 
-## Benchmark Results
+| Test | Docs | Pages/doc | Workers | Runs | Result |
+|---|---|---|---|---|---|
+| Basic rendering | 4 | 1 | 4 | 1 | PASSED |
+| Scaling | 8 | 3 | 8 | 1 | PASSED |
+| Stress | 16 | 3 | 8 | 3 | PASSED |
+| Heavy lifecycle | 16 | 5 | 16 | 3 | PASSED |
+| Max concurrency | 16 | 5 | 32 | 3 | PASSED |
 
-**Test PDF:** 70-page Japanese corporate report, 200 DPI rendering
-**Hardware:** 48-core CPU, 93 GiB RAM
+Same-document concurrent pages (1 doc, 4 pages, 4 workers): **CRASH (SIGSEGV)** — confirms the architectural limitation.
 
-| Scenario | Pages | Time | Throughput |
-|---|---|---|---|
-| Serial rendering (baseline) | 30 | 4.96s | 6 pages/sec |
-| 8-thread concurrent rendering | 30 | 1.00s | 30 pages/sec |
-| 4 concurrent PDFs x 30 pages | 120 | 1.82s | 66 pages/sec |
-| 5 concurrent PDFs x 70 pages | 350 | 3.50s | 100 pages/sec |
-| Stress: 10 rounds x 5 PDFs x 70 pages | 3,500 | 37.7s | 93 pages/sec |
-
-All stress tests completed with **zero crashes**.
+Test scripts are in `tests/`.
 
 ## Build
 
 ```bash
-PATH="$HOME/depot_tools:$PATH" ninja -C out/Release pdfium
+# PDFium requires depot_tools and gclient sync (see upstream README)
+
+# Configure (out/Shared/args.gn):
+#   is_component_build = true
+#   pdf_is_standalone = true
+#   is_debug = false
+
+# Build
+PATH="$HOME/depot_tools:$PATH" ninja -C out/Shared pdfium
+
+# Link into a single self-contained .so
+find out/Shared/obj -name '*.o' > /tmp/pdfium_objects.txt
+g++ -shared -o out/Shared/libpdfium_single.so @/tmp/pdfium_objects.txt \
+    -Wl,--allow-multiple-definition -lpthread -ldl -lm
 ```
 
-Output: `out/Release/libpdfium.so` (plus shared library dependencies in the same directory).
+Note: `is_component_build = true` is required for proper `FPDF_EXPORT` symbol visibility. The re-link step produces a single `.so` with no runtime dependencies on other PDFium component libraries.
 
 ## Install
 
 ```bash
-# Replace pypdfium2's bundled library
-cp out/Release/libpdfium.so \
+# Replace pypdfium2's bundled library (example for Python)
+cp out/Shared/libpdfium_single.so \
    ~/.local/lib/python3.10/site-packages/pypdfium2_raw/pdfium.so
 
-# Set LD_LIBRARY_PATH for shared library dependencies at runtime
-export LD_LIBRARY_PATH=/path/to/pdfium/out/Release
+# No LD_LIBRARY_PATH needed — single self-contained .so
 ```
 
-Note: This fork is based on an older PDFium version than pypdfium2's bundled binary. Two symbols (`FPDFCatalog_GetLanguage`, `FPDF_StructElement_GetExpansion`) are absent but unused in rendering paths.
+This fork is based on an older PDFium version than pypdfium2's bundled binary. Two symbols (`FPDFCatalog_GetLanguage`, `FPDF_StructElement_GetExpansion`) are absent but unused in rendering paths. pypdfium2's reference bindings handle this gracefully with `if hasattr()` guards.
+
+## Performance Impact
+
+Uncontended mutex acquisition is ~25ns on modern x86 — negligible compared to the milliseconds spent in actual rendering. Atomic reference counting uses relaxed/acq_rel ordering, which compiles to plain increments on x86. For single-threaded workloads there is no measurable overhead.
