@@ -16,20 +16,26 @@ Observable::~Observable() {
 }
 
 void Observable::AddObserver(ObserverIface* pObserver) {
+  std::lock_guard<std::mutex> lock(mutex_);
   DCHECK(!pdfium::Contains(observers_, pObserver));
   observers_.insert(pObserver);
 }
 
 void Observable::RemoveObserver(ObserverIface* pObserver) {
+  std::lock_guard<std::mutex> lock(mutex_);
   DCHECK(pdfium::Contains(observers_, pObserver));
   observers_.erase(pObserver);
 }
 
 void Observable::NotifyObservers() {
-  for (auto* pObserver : observers_) {
+  std::set<ObserverIface*> local_observers;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    local_observers.swap(observers_);
+  }
+  for (auto* pObserver : local_observers) {
     pObserver->OnObservableDestroyed();
   }
-  observers_.clear();
 }
 
 }  // namespace fxcrt

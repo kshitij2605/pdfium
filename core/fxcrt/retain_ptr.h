@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 
+#include <atomic>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -154,7 +155,9 @@ class Retainable {
  public:
   Retainable() = default;
 
-  bool HasOneRef() const { return ref_count_ == 1; }
+  bool HasOneRef() const {
+    return ref_count_.load(std::memory_order_acquire) == 1;
+  }
 
  protected:
   virtual ~Retainable() = default;
@@ -172,21 +175,20 @@ class Retainable {
   // These need to be const methods operating on a mutable member so that
   // RetainPtr<const T> can be used for an object that is otherwise const
   // apart from the internal ref-counting.
+  // Thread-safe: ref_count_ is atomic for concurrent Retain()/Release().
   void Retain() const {
-    ++ref_count_;
-    CHECK(ref_count_ > 0);
+    uintptr_t prev = ref_count_.fetch_add(1, std::memory_order_relaxed);
+    CHECK(prev < UINTPTR_MAX);
   }
   void Release() const {
-    CHECK(ref_count_ > 0);
-    if (--ref_count_ == 0) {
+    uintptr_t prev = ref_count_.fetch_sub(1, std::memory_order_acq_rel);
+    CHECK(prev > 0);
+    if (prev == 1) {
       delete this;
     }
   }
 
-  mutable uintptr_t ref_count_ = 0;
-  static_assert(std::is_unsigned<decltype(ref_count_)>::value,
-                "ref_count_ must be an unsigned type for overflow check"
-                "to work properly in Retain()");
+  mutable std::atomic<uintptr_t> ref_count_{0};
 };
 
 }  // namespace fxcrt

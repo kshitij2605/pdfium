@@ -7,6 +7,7 @@
 
 #include <stddef.h>
 
+#include <mutex>
 #include <set>
 
 #include "core/fxcrt/check.h"
@@ -33,9 +34,13 @@ class Observable {
   void NotifyObservers();
 
  protected:
-  size_t ActiveObserversForTesting() const { return observers_.size(); }
+  size_t ActiveObserversForTesting() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return observers_.size();
+  }
 
  private:
+  mutable std::mutex mutex_;
   std::set<ObserverIface*> observers_;
 };
 
