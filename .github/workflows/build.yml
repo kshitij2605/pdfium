@@ -27,6 +27,7 @@ jobs:
     env:
       BUILD_DIR: ${{ github.workspace }}/pdfium_build
       DEPOT_TOOLS_DIR: ${{ github.workspace }}/depot_tools
+      DEPOT_TOOLS_WIN_TOOLCHAIN: 0
 
     steps:
       - name: Free disk space (Linux)
