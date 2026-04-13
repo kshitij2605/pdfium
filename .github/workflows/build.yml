@@ -15,9 +15,6 @@ jobs:
           - os: ubuntu-22.04
             platform: linux-x64
             output: libpdfium.so
-          - os: macos-13
-            platform: macos-x64
-            output: libpdfium.dylib
           - os: macos-14
             platform: macos-arm64
             output: libpdfium.dylib
@@ -165,7 +162,6 @@ jobs:
             | Platform | File | Drop-in location |
             |---|---|---|
             | Linux x86_64 | `libpdfium.so` | pypdfium2: `site-packages/pypdfium2_raw/pdfium.so` |
-            | macOS x86_64 | `libpdfium.dylib` | pypdfium2: `site-packages/pypdfium2_raw/pdfium.dylib` |
             | macOS arm64 | `libpdfium.dylib` | pypdfium2: `site-packages/pypdfium2_raw/pdfium.dylib` |
             | Windows x64 | `pdfium.dll` | pypdfium2: `site-packages/pypdfium2_raw/pdfium.dll` |
 
@@ -180,6 +176,5 @@ jobs:
             See [FORK_CHANGES.md](https://github.com/${{ github.repository }}/blob/main/FORK_CHANGES.md) for full details.
           files: |
             pdfium-linux-x64/libpdfium.so
-            pdfium-macos-x64/libpdfium.dylib
             pdfium-macos-arm64/libpdfium.dylib
             pdfium-windows-x64/pdfium.dll
