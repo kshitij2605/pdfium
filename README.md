@@ -1,4 +1,50 @@
-# PDFium
+# PDFium (Thread-Safe Fork)
+
+Thread-safe PDFium for cross-document concurrency. Drop-in replacement — no code changes needed.
+
+## Quick Start
+
+Download the prebuilt binary for your platform from [Releases](../../releases), then replace your wrapper's bundled PDFium library:
+
+**Python (pypdfium2):**
+```bash
+# Find your pypdfium2 install location
+python -c "import pypdfium2_raw; print(pypdfium2_raw.__file__)"
+
+# Linux
+cp libpdfium.so /path/to/site-packages/pypdfium2_raw/pdfium.so
+
+# macOS
+cp libpdfium.dylib /path/to/site-packages/pypdfium2_raw/pdfium.dylib
+
+# Windows
+copy pdfium.dll \path\to\site-packages\pypdfium2_raw\pdfium.dll
+```
+
+**Rust (pdfium-render):**
+```rust
+let pdfium = Pdfium::new(
+    Pdfium::bind_to_library("./libpdfium.so")
+        .or_else(|_| Pdfium::bind_to_system_library())?
+);
+// thread_safe feature can now be disabled — PDFium itself is safe
+```
+
+**Go (go-pdfium):**
+```bash
+# Place libpdfium.so in your library path
+export LD_LIBRARY_PATH=/path/to/libpdfium:$LD_LIBRARY_PATH
+# Use single_threaded implementation instead of multi_threaded — no process isolation needed
+```
+
+**C/C++ (libvips, direct embedding):**
+```bash
+# Replace system or bundled libpdfium.so
+cp libpdfium.so /usr/local/lib/
+ldconfig
+```
+
+After replacing, all cross-document operations (open, load pages, render, close) are fully concurrent with no external locks needed.
 
 ## Thread Safety (Fork Modification)
 
