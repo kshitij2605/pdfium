@@ -10,6 +10,7 @@
 #include <ft2build.h>
 
 #include <memory>
+#include <mutex>
 
 #include "core/fxcrt/span.h"
 
@@ -24,8 +25,13 @@ using FXFT_LibraryRec = struct FT_LibraryRec_;
 using FXFT_FaceRec = struct FT_FaceRec_;
 using FXFT_StreamRec = struct FT_StreamRec_;
 
+// Global mutex protecting FT_New_Memory_Face / FT_Done_Face calls.
+// FreeType requires external synchronization for face creation/destruction
+// when sharing a single FT_Library across threads.
+std::mutex& GetFTFaceLifecycleMutex();
+
 struct FXFTFaceRecDeleter {
-  inline void operator()(FXFT_FaceRec* pRec) { FT_Done_Face(pRec); }
+  void operator()(FXFT_FaceRec* pRec);
 };
 
 struct FXFTLibraryRecDeleter {

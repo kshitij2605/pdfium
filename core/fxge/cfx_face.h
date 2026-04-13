@@ -9,6 +9,7 @@
 
 #include <array>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <vector>
 
@@ -156,6 +157,11 @@ class CFX_Face final : public Retainable, public Observable {
 
   bool HasFaceRec() const { return !!GetRec(); }
 
+  // Acquire a lock on the underlying FT_Face. Callers that use GetRec()
+  // directly MUST hold this lock for the duration of their FT operations.
+  // FreeType requires each FT_Face be used by only one thread at a time.
+  std::unique_lock<std::recursive_mutex> AcquireFTLock() const;
+
   // TODO(crbug.com/460068801): Make these private.
   FXFT_FaceRec* GetRec() { return rec_.get(); }
   const FXFT_FaceRec* GetRec() const { return rec_.get(); }
@@ -178,6 +184,7 @@ class CFX_Face final : public Retainable, public Observable {
   std::unique_ptr<FXFT_StreamRec> owned_stream_rec_;
   ScopedFXFTFaceRec const rec_;
   RetainPtr<Retainable> const desc_;
+  mutable std::recursive_mutex ft_mutex_;
 };
 
 #endif  // CORE_FXGE_CFX_FACE_H_

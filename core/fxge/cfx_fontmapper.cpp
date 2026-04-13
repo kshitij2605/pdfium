@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <mutex>
 #include <utility>
 
 #include "build/build_config.h"
@@ -630,6 +631,7 @@ RetainPtr<CFX_Face> CFX_FontMapper::FindSubstFont(const ByteString& name,
                                                   int italic_angle,
                                                   FX_CodePage code_page,
                                                   CFX_SubstFont* subst_font) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   if (weight == 0) {
     weight = pdfium::kFontWeightNormal;
   }

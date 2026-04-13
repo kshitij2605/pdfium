@@ -460,6 +460,7 @@ pdfium::span<uint8_t> CFX_Face::GetData() const {
 }
 
 size_t CFX_Face::GetSfntTable(uint32_t table, pdfium::span<uint8_t> buffer) {
+  std::lock_guard<std::recursive_mutex> lock(ft_mutex_);
   unsigned long length = pdfium::checked_cast<unsigned long>(buffer.size());
   if (length) {
     int error = FT_Load_Sfnt_Table(GetRec(), table, 0, buffer.data(), &length);
@@ -477,6 +478,7 @@ size_t CFX_Face::GetSfntTable(uint32_t table, pdfium::span<uint8_t> buffer) {
 }
 
 std::optional<std::array<uint32_t, 4>> CFX_Face::GetOs2UnicodeRange() {
+  std::lock_guard<std::recursive_mutex> lock(ft_mutex_);
   auto* os2 = static_cast<TT_OS2*>(FT_Get_Sfnt_Table(GetRec(), FT_SFNT_OS2));
   if (!os2) {
     return std::nullopt;
@@ -488,6 +490,7 @@ std::optional<std::array<uint32_t, 4>> CFX_Face::GetOs2UnicodeRange() {
 }
 
 std::optional<std::array<uint32_t, 2>> CFX_Face::GetOs2CodePageRange() {
+  std::lock_guard<std::recursive_mutex> lock(ft_mutex_);
   auto* os2 = static_cast<TT_OS2*>(FT_Get_Sfnt_Table(GetRec(), FT_SFNT_OS2));
   if (!os2) {
     return std::nullopt;
@@ -497,6 +500,7 @@ std::optional<std::array<uint32_t, 2>> CFX_Face::GetOs2CodePageRange() {
 }
 
 std::optional<std::array<uint8_t, 2>> CFX_Face::GetOs2Panose() {
+  std::lock_guard<std::recursive_mutex> lock(ft_mutex_);
   auto* os2 = static_cast<TT_OS2*>(FT_Get_Sfnt_Table(GetRec(), FT_SFNT_OS2));
   if (!os2) {
     return std::nullopt;
@@ -515,6 +519,7 @@ std::unique_ptr<CFX_GlyphBitmap> CFX_Face::RenderGlyph(const CFX_Font* font,
                                                        const CFX_Matrix& matrix,
                                                        int dest_width,
                                                        int anti_alias) {
+  std::lock_guard<std::recursive_mutex> lock(ft_mutex_);
   FT_Matrix ft_matrix;
   ft_matrix.xx = matrix.a / 64 * 65536;
   ft_matrix.xy = matrix.c / 64 * 65536;
@@ -640,6 +645,7 @@ std::unique_ptr<CFX_Path> CFX_Face::LoadGlyphPath(
     int dest_width,
     bool is_vertical,
     const CFX_SubstFont* subst_font) {
+  std::lock_guard<std::recursive_mutex> lock(ft_mutex_);
   FXFT_FaceRec* rec = GetRec();
   FT_Set_Pixel_Sizes(rec, 0, 64);
   FT_Matrix ft_matrix = {65536, 0, 0, 65536};
@@ -705,6 +711,7 @@ int CFX_Face::GetGlyphWidth(uint32_t glyph_index,
                             int dest_width,
                             int weight,
                             const CFX_SubstFont* subst_font) {
+  std::lock_guard<std::recursive_mutex> lock(ft_mutex_);
   if (subst_font && subst_font->IsBuiltInGenericFont()) {
     AdjustVariationParams(glyph_index, dest_width, weight);
   }
@@ -726,6 +733,7 @@ int CFX_Face::GetGlyphWidth(uint32_t glyph_index,
 }
 
 ByteString CFX_Face::GetGlyphName(uint32_t glyph_index) {
+  std::lock_guard<std::recursive_mutex> lock(ft_mutex_);
   char name[256] = {};
   FT_Get_Glyph_Name(GetRec(), glyph_index, name, sizeof(name));
   name[255] = 0;
@@ -733,14 +741,17 @@ ByteString CFX_Face::GetGlyphName(uint32_t glyph_index) {
 }
 
 int CFX_Face::GetCharIndex(uint32_t code) {
+  std::lock_guard<std::recursive_mutex> lock(ft_mutex_);
   return FT_Get_Char_Index(GetRec(), code);
 }
 
 int CFX_Face::GetNameIndex(const char* name) {
+  std::lock_guard<std::recursive_mutex> lock(ft_mutex_);
   return FT_Get_Name_Index(GetRec(), name);
 }
 
 int CFX_Face::LoadGlyph(uint32_t glyph_index, bool scale) {
+  std::lock_guard<std::recursive_mutex> lock(ft_mutex_);
   FT_Int32 args = FT_LOAD_IGNORE_GLOBAL_ADVANCE_WIDTH;
   if (!scale) {
     args |= FT_LOAD_NO_SCALE;
@@ -749,6 +760,7 @@ int CFX_Face::LoadGlyph(uint32_t glyph_index, bool scale) {
 }
 
 FX_RECT CFX_Face::GetCharBBox(uint32_t code, int glyph_index) {
+  std::lock_guard<std::recursive_mutex> lock(ft_mutex_);
   FX_RECT rect;
   FXFT_FaceRec* rec = GetRec();
   if (IsTricky()) {
@@ -805,6 +817,7 @@ FX_RECT CFX_Face::GetGlyphBBox() const {
 
 std::vector<CFX_Face::CharCodeAndIndex> CFX_Face::GetCharCodesAndIndices(
     char32_t max_char) {
+  std::lock_guard<std::recursive_mutex> lock(ft_mutex_);
   CharCodeAndIndex char_code_and_index;
   char_code_and_index.char_code = static_cast<uint32_t>(
       FT_Get_First_Char(GetRec(), &char_code_and_index.glyph_index));
@@ -864,6 +877,7 @@ size_t CFX_Face::GetCharMapCount() const {
 }
 
 void CFX_Face::SetCharMap(CharMap map) {
+  std::lock_guard<std::recursive_mutex> lock(ft_mutex_);
   FT_Set_Charmap(GetRec(), static_cast<FT_CharMap>(map));
 }
 
@@ -874,11 +888,13 @@ void CFX_Face::SetCharMapByIndex(size_t index) {
 }
 
 bool CFX_Face::SelectCharMap(fxge::FontEncoding encoding) {
+  std::lock_guard<std::recursive_mutex> lock(ft_mutex_);
   FT_Error error = FT_Select_Charmap(GetRec(), ToFTEncoding(encoding));
   return !error;
 }
 
 bool CFX_Face::SetPixelSize(uint32_t width, uint32_t height) {
+  std::lock_guard<std::recursive_mutex> lock(ft_mutex_);
   FT_Error error = FT_Set_Pixel_Sizes(GetRec(), width, height);
   return !error;
 }
@@ -903,6 +919,10 @@ CFX_Face::CFX_Face(FXFT_FaceRec* rec, RetainPtr<Retainable> pDesc)
 }
 
 CFX_Face::~CFX_Face() = default;
+
+std::unique_lock<std::recursive_mutex> CFX_Face::AcquireFTLock() const {
+  return std::unique_lock<std::recursive_mutex>(ft_mutex_);
+}
 
 void CFX_Face::AdjustVariationParams(int glyph_index,
                                      int dest_width,

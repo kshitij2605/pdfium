@@ -86,6 +86,7 @@ void CPDF_SimpleFont::LoadCharMetrics(int charcode) {
     return;
   }
 
+  auto ft_lock = face->AcquireFTLock();
   int err = face->LoadGlyph(glyph_index, /*scale=*/false);
   if (err) {
     return;

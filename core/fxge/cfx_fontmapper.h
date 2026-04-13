@@ -9,6 +9,7 @@
 
 #include <array>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -125,6 +126,7 @@ class CFX_FontMapper {
     uint32_t charset;
   };
 
+  mutable std::recursive_mutex mutex_;
   bool list_loaded_ = false;
   bool skip_font_enumeration_ = false;
   ByteString last_family_;

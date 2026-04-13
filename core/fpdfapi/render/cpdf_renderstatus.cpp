@@ -80,7 +80,7 @@
 namespace {
 
 constexpr int kRenderMaxRecursionDepth = 64;
-int g_CurrentRecursionDepth = 0;
+thread_local int g_CurrentRecursionDepth = 0;
 
 CFX_FillRenderOptions GetFillOptionsForDrawPathWithBlend(
     const CPDF_RenderOptions::Options& options,

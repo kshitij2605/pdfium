@@ -9,6 +9,7 @@
 #include <array>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <utility>
 
 #include "core/fxcrt/check_op.h"
@@ -116,9 +117,12 @@ RetainPtr<CFX_FontMgr::FontDesc> CFX_FontMgr::AddCachedTTCFontDesc(
 RetainPtr<CFX_Face> CFX_FontMgr::NewFixedFace(RetainPtr<FontDesc> pDesc,
                                               pdfium::span<const uint8_t> span,
                                               size_t face_index) {
-  RetainPtr<CFX_Face> face =
-      CFX_Face::New(ft_library_.get(), std::move(pDesc), span,
-                    static_cast<FT_Long>(face_index));
+  RetainPtr<CFX_Face> face;
+  {
+    std::lock_guard<std::mutex> lock(GetFTFaceLifecycleMutex());
+    face = CFX_Face::New(ft_library_.get(), std::move(pDesc), span,
+                         static_cast<FT_Long>(face_index));
+  }
   if (!face || !face->SetPixelSize(64, 64)) {
     return nullptr;
   }

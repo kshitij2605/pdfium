@@ -7,10 +7,23 @@
 #include "core/fxge/freetype/fx_freetype.h"
 
 #include <stdint.h>
+#include <mutex>
 
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxge/cfx_fontmgr.h"
 #include "core/fxge/cfx_gemodule.h"
+
+std::mutex& GetFTFaceLifecycleMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+void FXFTFaceRecDeleter::operator()(FXFT_FaceRec* pRec) {
+  if (pRec) {
+    std::lock_guard<std::mutex> lock(GetFTFaceLifecycleMutex());
+    FT_Done_Face(pRec);
+  }
+}
 
 #define DEFINE_PS_TABLES
 #include "third_party/freetype/include/pstables.h"

@@ -277,6 +277,7 @@ std::optional<FX_RECT> CFX_Font::GetGlyphBBox(uint32_t glyph_index) {
     return std::nullopt;
   }
 
+  auto lock = face_->AcquireFTLock();
   if (face_->IsTricky()) {
     int error = FT_Set_Char_Size(face_->GetRec(), 0, 1000 * 64, 72, 72);
     if (error) {
@@ -356,6 +357,7 @@ ByteString CFX_Font::GetPsName() const {
     return ByteString();
   }
 
+  auto lock = face_->AcquireFTLock();
   ByteString psName = FT_Get_Postscript_Name(face_->GetRec());
   if (psName.IsEmpty()) {
     psName = kUntitledFontName;
