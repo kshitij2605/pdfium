@@ -1,0 +1,185 @@
+name: Build Thread-Safe PDFium
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x64
+            output: libpdfium.so
+          - os: macos-13
+            platform: macos-x64
+            output: libpdfium.dylib
+          - os: macos-14
+            platform: macos-arm64
+            output: libpdfium.dylib
+          - os: windows-latest
+            platform: windows-x64
+            output: pdfium.dll
+
+    runs-on: ${{ matrix.os }}
+
+    env:
+      BUILD_DIR: ${{ github.workspace }}/pdfium_build
+      DEPOT_TOOLS_DIR: ${{ github.workspace }}/depot_tools
+
+    steps:
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/local/.ghcup
+          df -h /
+
+      - name: Install depot_tools
+        shell: bash
+        run: |
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$DEPOT_TOOLS_DIR"
+          echo "$DEPOT_TOOLS_DIR" >> "$GITHUB_PATH"
+
+      - name: Configure gclient
+        shell: bash
+        run: |
+          mkdir -p "$BUILD_DIR" && cd "$BUILD_DIR"
+          gclient config --unmanaged "${{ github.server_url }}/${{ github.repository }}.git"
+
+      - name: Sync PDFium source
+        shell: bash
+        run: |
+          cd "$BUILD_DIR"
+          gclient sync --shallow --force --verbose
+
+      - name: Checkout target ref
+        shell: bash
+        run: |
+          cd "$BUILD_DIR/pdfium"
+          git checkout "${{ github.sha }}"
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cd "$BUILD_DIR/pdfium"
+          ./build/install-build-deps.sh --no-prompt --no-chromeos-fonts --no-nacl --no-arm
+
+      - name: Generate build files
+        shell: bash
+        run: |
+          cd "$BUILD_DIR/pdfium"
+          mkdir -p out/Shared
+          cat > out/Shared/args.gn << 'ARGS'
+          is_debug = false
+          is_component_build = true
+          pdf_is_standalone = true
+          pdf_enable_v8 = false
+          pdf_enable_xfa = false
+          use_custom_libcxx = false
+          treat_warnings_as_errors = false
+          pdf_use_skia = false
+          ARGS
+          gn gen out/Shared
+
+      - name: Build PDFium
+        shell: bash
+        run: |
+          cd "$BUILD_DIR/pdfium"
+          ninja -C out/Shared pdfium
+
+      - name: Link single library (Linux)
+        if: matrix.platform == 'linux-x64'
+        run: |
+          cd "$BUILD_DIR/pdfium"
+          find out/Shared/obj -name '*.o' > /tmp/objects.txt
+          echo "Object files found: $(wc -l < /tmp/objects.txt)"
+          g++ -shared -o "out/Shared/${{ matrix.output }}" @/tmp/objects.txt \
+              -Wl,--allow-multiple-definition -lpthread -ldl -lm
+          ls -lh "out/Shared/${{ matrix.output }}"
+
+      - name: Link single library (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        run: |
+          cd "$BUILD_DIR/pdfium"
+          find out/Shared/obj -name '*.o' > /tmp/objects.txt
+          echo "Object files found: $(wc -l < /tmp/objects.txt)"
+          clang++ -shared -o "out/Shared/${{ matrix.output }}" $(cat /tmp/objects.txt) \
+              -Wl,-undefined,dynamic_lookup -lpthread
+          ls -lh "out/Shared/${{ matrix.output }}"
+
+      - name: Link single library (Windows)
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        run: |
+          cd "$env:BUILD_DIR\pdfium"
+          $objs = Get-ChildItem -Recurse -Path "out\Shared\obj" -Filter "*.obj" | ForEach-Object { $_.FullName }
+          $objs | Out-File -FilePath "objects.txt" -Encoding ASCII
+          Write-Output "Object files found: $($objs.Count)"
+          & "out\Shared\lld-link.exe" /DLL /OUT:"out\Shared\${{ matrix.output }}" `
+              @objects.txt kernel32.lib user32.lib gdi32.lib advapi32.lib
+          Get-Item "out\Shared\${{ matrix.output }}" | Select-Object Name, Length
+
+      - name: Verify exported symbols (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd "$BUILD_DIR/pdfium"
+          echo "FPDF_ symbols exported:"
+          nm -D "out/Shared/${{ matrix.output }}" 2>/dev/null | grep -c "T FPDF_" || \
+          nm "out/Shared/${{ matrix.output }}" 2>/dev/null | grep -c "T _FPDF_"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdfium-${{ matrix.platform }}
+          path: ${{ env.BUILD_DIR }}/pdfium/out/Shared/${{ matrix.output }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: List artifacts
+        run: find . -type f | head -20
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            ## Thread-Safe PDFium — Drop-in Replacement
+
+            Fully concurrent cross-document operations (open, render, close) from multiple threads with no external locks.
+
+            ### Download
+
+            | Platform | File | Drop-in location |
+            |---|---|---|
+            | Linux x86_64 | `libpdfium.so` | pypdfium2: `site-packages/pypdfium2_raw/pdfium.so` |
+            | macOS x86_64 | `libpdfium.dylib` | pypdfium2: `site-packages/pypdfium2_raw/pdfium.dylib` |
+            | macOS arm64 | `libpdfium.dylib` | pypdfium2: `site-packages/pypdfium2_raw/pdfium.dylib` |
+            | Windows x64 | `pdfium.dll` | pypdfium2: `site-packages/pypdfium2_raw/pdfium.dll` |
+
+            ### What's patched
+            - Atomic reference counting (`Retainable::ref_count_`)
+            - Per-face recursive mutex on all FreeType operations
+            - Thread-safe `Observable` (mutex on observer set)
+            - Thread-local parser recursion depth
+            - Global font singleton mutexes (FontGlobals, FontCache, FontMgr, FontMapper)
+            - GlyphCache mutex + thread-local error state
+
+            See [FORK_CHANGES.md](https://github.com/${{ github.repository }}/blob/main/FORK_CHANGES.md) for full details.
+          files: |
+            pdfium-linux-x64/libpdfium.so
+            pdfium-macos-x64/libpdfium.dylib
+            pdfium-macos-arm64/libpdfium.dylib
+            pdfium-windows-x64/pdfium.dll
