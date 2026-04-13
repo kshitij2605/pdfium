@@ -67,7 +67,8 @@ jobs:
           cd "$BUILD_DIR/pdfium"
           ./build/install-build-deps.sh --no-prompt --no-chromeos-fonts --no-nacl --no-arm
 
-      - name: Generate build files
+      - name: Generate build files (Linux)
+        if: matrix.platform == 'linux-x64'
         shell: bash
         run: |
           cd "$BUILD_DIR/pdfium"
@@ -85,6 +86,42 @@ jobs:
           pdf_use_skia = false
           use_glib = false
           use_ozone = false
+          ARGS
+          gn gen out/Shared
+
+      - name: Generate build files (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        run: |
+          cd "$BUILD_DIR/pdfium"
+          mkdir -p out/Shared
+          cat > out/Shared/args.gn << 'ARGS'
+          is_debug = false
+          is_component_build = true
+          pdf_is_standalone = true
+          pdf_enable_v8 = false
+          pdf_enable_xfa = false
+          use_custom_libcxx = false
+          treat_warnings_as_errors = false
+          pdf_use_skia = false
+          ARGS
+          gn gen out/Shared
+
+      - name: Generate build files (Windows)
+        if: matrix.platform == 'windows-x64'
+        shell: bash
+        run: |
+          cd "$BUILD_DIR/pdfium"
+          mkdir -p out/Shared
+          cat > out/Shared/args.gn << 'ARGS'
+          is_debug = false
+          is_component_build = true
+          pdf_is_standalone = true
+          pdf_enable_v8 = false
+          pdf_enable_xfa = false
+          treat_warnings_as_errors = false
+          pdf_use_skia = false
+          clang_use_chrome_plugins = false
           ARGS
           gn gen out/Shared
 
